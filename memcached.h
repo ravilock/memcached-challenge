@@ -198,8 +198,8 @@ enum store_item_type {
     NOT_STORED=0, STORED, EXISTS, NOT_FOUND
 };
 
-enum delta_result_type {
-    OK, NON_NUMERIC, EOM, DELTA_ITEM_NOT_FOUND, DELTA_ITEM_CAS_MISMATCH
+enum mathematical_result_type {
+    OK, NON_NUMERIC, EOM, MATHEMATICAL_ITEM_NOT_FOUND, MATHEMATICAL_ITEM_CAS_MISMATCH
 };
 
 /** Time relative to server start. Smaller than time_t on 64-bit systems. */
@@ -480,10 +480,14 @@ extern struct slab_rebalance slab_rebal;
  * Functions
  */
 void do_accept_new_conns(const bool do_accept);
-enum delta_result_type do_add_delta(conn *c, const char *key,
+enum mathematical_result_type do_add_delta(conn *c, const char *key,
                                     const size_t nkey, const bool incr,
                                     const int64_t delta, char *buf,
                                     uint64_t *cas, const uint32_t hv);
+enum mathematical_result_type do_multiply_value(conn *c, const char *key,
+                                    const size_t nkey, const uint64_t multiplier,
+                                    char *buf, uint64_t *cas,
+                                    const uint32_t hv);
 enum store_item_type do_store_item(item *item, int comm, conn* c, const uint32_t hv);
 conn *conn_new(const int sfd, const enum conn_states init_state, const int event_flags, const int read_buffer_size, enum network_transport transport, struct event_base *base);
 extern int daemonize(int nochdir, int noclose);
@@ -516,10 +520,13 @@ int  dispatch_event_add(int thread, conn *c);
 void dispatch_conn_new(int sfd, enum conn_states init_state, int event_flags, int read_buffer_size, enum network_transport transport);
 
 /* Lock wrappers for cache functions that are called from main loop. */
-enum delta_result_type add_delta(conn *c, const char *key,
+enum mathematical_result_type add_delta(conn *c, const char *key,
                                  const size_t nkey, const int incr,
                                  const int64_t delta, char *buf,
                                  uint64_t *cas);
+enum mathematical_result_type multiply_value(conn *c, const char *key,
+                                             const size_t nkey, uint64_t multiplier,
+                                             char *buf, uint64_t *cas);
 void accept_new_conns(const bool do_accept);
 conn *conn_from_freelist(void);
 bool  conn_add_to_freelist(conn *c);

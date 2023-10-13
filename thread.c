@@ -573,16 +573,29 @@ void item_update(item *item) {
 /*
  * Does arithmetic on a numeric item value.
  */
-enum delta_result_type add_delta(conn *c, const char *key,
+enum mathematical_result_type add_delta(conn *c, const char *key,
                                  const size_t nkey, int incr,
                                  const int64_t delta, char *buf,
                                  uint64_t *cas) {
-    enum delta_result_type ret;
+    enum mathematical_result_type ret;
     uint32_t hv;
 
     hv = hash(key, nkey, 0);
     item_lock(hv);
     ret = do_add_delta(c, key, nkey, incr, delta, buf, cas, hv);
+    item_unlock(hv);
+    return ret;
+}
+
+enum mathematical_result_type multiply_value(conn *c, const char *key,
+                                             const size_t nkey, uint64_t multiplier,
+                                             char *buf, uint64_t *cas) {
+    enum mathematical_result_type ret;
+    uint32_t hv;
+
+    hv = hash(key, nkey, 0);
+    item_lock(hv);
+    ret = do_multiply_value(c, key, nkey, multiplier, buf, cas, hv);
     item_unlock(hv);
     return ret;
 }
