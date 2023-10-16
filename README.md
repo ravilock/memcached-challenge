@@ -1,38 +1,18 @@
-# Memcached
+# Memcached challenge
 
-## Dependencies
+[Memcached](https://memcached.org/about) is a in-memory key-value store.
 
-* libevent, http://www.monkey.org/~provos/libevent/ (libevent-dev)
+The idea of this challenge is to measure if a developer is able to familiarize himself/herself with a new codebase and extend it with new functionalities.
+This is particularly interesting because it is a real-world experience that a developer will need to suceed in a new job.
 
-## Environment
+memcached is a key-value store. That means we can tell it to remember something (an association between a key and a value), and then later ask for that key again, and it’ll tell us the value it remembered.
 
-### Linux
+## The Challegne
 
-If using Linux, you need a kernel with epoll.  Sure, libevent will
-work with normal select, but it sucks.
+The idea here is to implement a new command that works similarly to the `incr` command, that can be used to increment an intenger with another integer N.
+The new command is the `mult` command. It can be used to multiply an integer by another integer N.
 
-epoll isn't in Linux 2.4, but there's a backport at:
+## Credits and Better Description
 
-    http://www.xmailserver.org/linux-patches/nio-improve.html
-
-You want the epoll-lt patch (level-triggered).
-
-### Mac OS X
-
-If you're using MacOS, you'll want libevent 1.1 or higher to deal with
-a kqueue bug.
-
-Also, be warned that the -k (mlockall) option to memcached might be
-dangerous when using a large cache.  Just make sure the memcached machines
-don't swap.  memcached does non-blocking network I/O, but not disk.  (it
-should never go to disk, or you've lost the whole point of it)
-
-## Website
-
-* http://www.memcached.org
-
-## Contributing
-
-Want to contribute?  Up-to-date pointers should be at:
-
-* http://contributing.appspot.com/memcached
+This challenge was orignally brought Arthur O'Dwyer on [this post](https://quuxplusone.github.io/blog/2022/01/06/memcached-interview/#memcached-is-a-key-value-store.).
+You can also see a better description and context of the problem there.
