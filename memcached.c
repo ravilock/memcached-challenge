@@ -1082,7 +1082,7 @@ static void complete_incr_bin(conn *c) {
     case EOM:
         write_bin_error(c, PROTOCOL_BINARY_RESPONSE_ENOMEM, 0);
         break;
-    case DELTA_ITEM_NOT_FOUND:
+    case MATHEMATICAL_ITEM_NOT_FOUND:
         if (req->message.body.expiration != 0xffffffff) {
             /* Save some room for the response */
             rsp->message.body.value = htonll(req->message.body.initial);
@@ -1115,7 +1115,7 @@ static void complete_incr_bin(conn *c) {
             write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_ENOENT, 0);
         }
         break;
-    case DELTA_ITEM_CAS_MISMATCH:
+    case MATHEMATICAL_ITEM_CAS_MISMATCH:
         write_bin_error(c, PROTOCOL_BINARY_RESPONSE_KEY_EEXISTS, 0);
         break;
     }
@@ -3022,7 +3022,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
     case EOM:
         out_string(c, "SERVER_ERROR out of memory");
         break;
-    case DELTA_ITEM_NOT_FOUND:
+    case MATHEMATICAL_ITEM_NOT_FOUND:
         pthread_mutex_lock(&c->thread->stats.mutex);
         if (incr) {
             c->thread->stats.incr_misses++;
@@ -3033,9 +3033,53 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
 
         out_string(c, "NOT_FOUND");
         break;
-    case DELTA_ITEM_CAS_MISMATCH:
+    case MATHEMATICAL_ITEM_CAS_MISMATCH:
         break; /* Should never get here */
     }
+}
+
+static void process_multiply_command(conn *c, token_t *tokens, const size_t ntokens) {
+    char temp[INCR_MAX_STORAGE_LEN];
+    uint64_t multiplier;
+    char *key;
+    size_t nkey;
+
+    assert(c != NULL);
+
+    set_noreply_maybe(c, tokens, ntokens);
+
+    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+
+    key = tokens[KEY_TOKEN].value;
+    nkey = tokens[KEY_TOKEN].length;
+
+    if (!safe_strtoull(tokens[2].value, &multiplier)) {
+        out_string(c, "CLIENT_ERROR invalid numeric delta argument");
+        return;
+    }
+
+    switch(multiply_value(c, key, nkey, multiplier, temp, NULL)) {
+    case OK:
+        out_string(c, temp);
+        break;
+    case NON_NUMERIC:
+        out_string(c, "CLIENT_ERROR cannot multiply non-numeric value");
+        break;
+    case EOM:
+        out_string(c, "SERVER_ERROR out of memory");
+        break;
+    case MATHEMATICAL_ITEM_NOT_FOUND:
+        pthread_mutex_lock(&c->thread->stats.mutex);
+        // c->thread->stats.incr_misses++; // TODO: Rename to multiply misses
+        pthread_mutex_unlock(&c->thread->stats.mutex);
+        out_string(c, "NOT_FOUND");
+        break;
+    case MATHEMATICAL_ITEM_CAS_MISMATCH:
+        break; /* Should never get here */
+  }
 }
 
 /*
@@ -3049,7 +3093,7 @@ static void process_arithmetic_command(conn *c, token_t *tokens, const size_t nt
  *
  * returns a response string to send back to the client.
  */
-enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
+enum mathematical_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
                                     const bool incr, const int64_t delta,
                                     char *buf, uint64_t *cas,
                                     const uint32_t hv) {
@@ -3060,12 +3104,12 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
 
     it = do_item_get(key, nkey, hv);
     if (!it) {
-        return DELTA_ITEM_NOT_FOUND;
+        return MATHEMATICAL_ITEM_NOT_FOUND;
     }
 
     if (cas != NULL && *cas != 0 && ITEM_get_cas(it) != *cas) {
         do_item_remove(it);
-        return DELTA_ITEM_CAS_MISMATCH;
+        return MATHEMATICAL_ITEM_CAS_MISMATCH;
     }
 
     ptr = ITEM_data(it);
@@ -3093,6 +3137,83 @@ enum delta_result_type do_add_delta(conn *c, const char *key, const size_t nkey,
     } else {
         c->thread->stats.slab_stats[it->slabs_clsid].decr_hits++;
     }
+    pthread_mutex_unlock(&c->thread->stats.mutex);
+
+    snprintf(buf, INCR_MAX_STORAGE_LEN, "%llu", (unsigned long long)value);
+    res = strlen(buf);
+    if (res + 2 > it->nbytes || it->refcount != 1) { /* need to realloc */
+        item *new_it;
+        new_it = do_item_alloc(ITEM_key(it), it->nkey, atoi(ITEM_suffix(it) + 1), it->exptime, res + 2, hv);
+        if (new_it == 0) {
+            do_item_remove(it);
+            return EOM;
+        }
+        memcpy(ITEM_data(new_it), buf, res);
+        memcpy(ITEM_data(new_it) + res, "\r\n", 2);
+        item_replace(it, new_it, hv);
+        // Overwrite the older item's CAS with our new CAS since we're
+        // returning the CAS of the old item below.
+        ITEM_set_cas(it, (settings.use_cas) ? ITEM_get_cas(new_it) : 0);
+        do_item_remove(new_it);       /* release our reference */
+    } else { /* replace in-place */
+        /* When changing the value without replacing the item, we
+           need to update the CAS on the existing item. */
+        mutex_lock(&cache_lock); /* FIXME */
+        ITEM_set_cas(it, (settings.use_cas) ? get_cas_id() : 0);
+        mutex_unlock(&cache_lock);
+
+        memcpy(ITEM_data(it), buf, res);
+        memset(ITEM_data(it) + res, ' ', it->nbytes - res - 2);
+        do_item_update(it);
+    }
+
+    if (cas) {
+        *cas = ITEM_get_cas(it);    /* swap the incoming CAS value */
+    }
+    do_item_remove(it);         /* release our reference */
+    return OK;
+}
+
+/*
+ * multiplies a value to a numeric item.
+ *
+ * c     connection requesting the operation
+ * it    item to adjust
+ * multiplier amount to multiply value by
+ * buf   buffer for response string
+ *
+ * returns a response string to send back to the client.
+ */
+enum mathematical_result_type do_multiply_value(conn *c, const char *key,
+                                    const size_t nkey, const uint64_t multiplier,
+                                    char *buf, uint64_t *cas,
+                                    const uint32_t hv) {
+    char *ptr;
+    uint64_t value;
+    int res;
+    item *it;
+
+    it = do_item_get(key, nkey, hv);
+    if (!it) {
+        return MATHEMATICAL_ITEM_NOT_FOUND;
+    }
+
+    if (cas != NULL && *cas != 0 && ITEM_get_cas(it) != *cas) {
+        do_item_remove(it);
+        return MATHEMATICAL_ITEM_CAS_MISMATCH;
+    }
+
+    ptr = ITEM_data(it);
+
+    if (!safe_strtoull(ptr, &value)) {
+        do_item_remove(it);
+        return NON_NUMERIC;
+    }
+    
+    value *= multiplier;
+
+    pthread_mutex_lock(&c->thread->stats.mutex);
+    // c->thread->stats.slab_stats[it->slabs_clsid].incr_hits++; // change to multiply_hits
     pthread_mutex_unlock(&c->thread->stats.mutex);
 
     snprintf(buf, INCR_MAX_STORAGE_LEN, "%llu", (unsigned long long)value);
@@ -3264,6 +3385,10 @@ static void process_command(conn *c, char *command) {
     } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, "incr") == 0)) {
 
         process_arithmetic_command(c, tokens, ntokens, 1);
+
+    } else if ((ntokens == 4 || ntokens == 5) && (strcmp(tokens[COMMAND_TOKEN].value, "mult") == 0)) {
+
+        process_multiply_command(c, tokens, ntokens);
 
     } else if (ntokens >= 3 && (strcmp(tokens[COMMAND_TOKEN].value, "gets") == 0)) {
 
